@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
 
@@ -17,9 +18,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     region
         .for_each_chunk(|x, z, data| {
-            println!("x={} / z={}", x, z);
-            // deserialises the whole chunk which takes a while...
-            let _chunk: Value = fastnbt::de::from_bytes(data).unwrap();
+            println!("Processing Chunk: x={} / z={}", x, z);
+
+            let compound: HashMap<String, Value> =
+                fastnbt::de::from_bytes(data.as_slice()).unwrap();
+            match compound["DataVersion"] {
+                Value::Int(ver) => println!("Version: {}", ver),
+                _ => {}
+            }
+            // println!("{:#?}", compound);
         })
         .map_err(|e| e.into())
 }
