@@ -1,6 +1,6 @@
 use fastanvil::{Chunk, JavaChunk, RegionBuffer};
 use log::*;
-use std::{collections::BTreeMap, fs::File, sync::mpsc::channel};
+use std::{cmp, collections::BTreeMap, fs::File, ops::Range, sync::mpsc::channel};
 use structopt::StructOpt;
 use threadpool::ThreadPool;
 
@@ -19,9 +19,15 @@ struct Opt {
     /// Minecraft region file (*.mca)
     #[structopt(short = "f", long = "region-file")]
     region_file: String,
-    /// Number of concurrent threads (defaults to number of CPU cores)
+    /// Number of concurrent threads; defaults to the number of available CPU cores
     #[structopt(short = "t", long = "threads")]
     threads: Option<usize>,
+    /// Expect high worlds; for Minecraft 1.18 and later: -64 <= y < 320
+    #[structopt(short = "h", long = "high-worlds")]
+    high_worlds: bool,
+    /// Process all chunks, including those that haven't been fully populated yet
+    #[structopt(short = "a", long = "all-chunks")]
+    all_chunks: bool,
 }
 
 fn main() {
@@ -37,6 +43,13 @@ fn main() {
         .init()
         .unwrap();
 
+    // world height
+    let world_y_coords = if opt.high_worlds { -64..320 } else { 0..256 };
+    info!(
+        "Using Y coordinate range from {} to {}.",
+        world_y_coords.start, world_y_coords.end
+    );
+
     // initialise thread pool
     let threads = opt.threads.unwrap_or_default();
     let pool_size = if threads == 0 {
@@ -49,10 +62,11 @@ fn main() {
 
     let (tx, rx) = channel();
 
-    // process Minecraft region files
+    // MAP: process Minecraft region files
     {
         // TODO: loop over region files
         let tx = tx.clone();
+        let world_y_coords = world_y_coords.clone();
 
         // process each region file in separate thread
         pool.execute(move || {
@@ -61,14 +75,14 @@ fn main() {
             info!("Processing file {}...", file_path);
             let file = File::open(file_path).expect("file does not exist");
 
-            let region_counts = gather_region_stats(file);
+            let region_counts = gather_region_stats(file, world_y_coords, opt.all_chunks);
 
             tx.send(region_counts).expect("Could not send data!");
         });
     }
     drop(tx);
 
-    // process results coming in from each region file
+    // REDUCE: process results coming in from each region file
     let mut final_counts: BTreeMap<String, Vec<isize>> = BTreeMap::new();
     for region_counts in rx.iter() {
         info!(
@@ -89,14 +103,33 @@ fn main() {
         }
     }
 
+    // print CSV header
+    print!("block_type");
+    for y in world_y_coords {
+        print!(",y_{}", y);
+    }
+    println!();
+    // print CSV rows
     for (k, v) in final_counts {
-        println!("{} -> {:?}", k, v);
+        print!("\"{}\"",k);
+        for count in v {
+            print!(",{}",count);
+        }
+        println!();
     }
 }
 
-fn gather_region_stats(file: File) -> BTreeMap<String, Vec<isize>> {
+fn gather_region_stats(
+    file: File,
+    world_y_coords: Range<isize>,
+    full_chunks_only: bool,
+) -> BTreeMap<String, Vec<isize>> {
+    let world_height = usize::try_from(world_y_coords.end - world_y_coords.start).unwrap();
+    debug!("World height={}", world_height);
+
     let mut region = RegionBuffer::new(file);
     let mut region_counts: BTreeMap<String, Vec<isize>> = BTreeMap::new();
+    let mut max_y_range = 0..0;
 
     // process all chunks in region file sequentially
     let _ = region.for_each_chunk(|x, z, data| {
@@ -112,13 +145,12 @@ fn gather_region_stats(file: File) -> BTreeMap<String, Vec<isize>> {
         );
 
         // skip incomplete chunks
-        if chunk.status() == CHUNK_FULL {
-            // let world_height = usize::try_from(chunk.y_range().end - chunk.y_range().start).unwrap();
-            let world_height = 256; // hard-coded for 1.17 -> will break things for 1.18!
-            let height_offset = 0 - chunk.y_range().start;
-
-            for chunk_y in chunk.y_range() {
-                let counter_idx = usize::try_from(height_offset + chunk_y).unwrap();
+        if chunk.status() == CHUNK_FULL || full_chunks_only {
+            let y_range = range_intersect(&world_y_coords, &chunk.y_range());
+            // TODO: use maximum y_range to further limit dimensions of result set
+            max_y_range = range_union(&y_range, &max_y_range);
+            for chunk_y in y_range {
+                let counter_idx = usize::try_from(chunk_y - world_y_coords.start).unwrap();
                 for chunk_x in 0..16 {
                     for chunk_z in 0..16 {
                         let block_type = chunk.block(chunk_x, chunk_y, chunk_z).unwrap().name();
@@ -138,4 +170,16 @@ fn gather_region_stats(file: File) -> BTreeMap<String, Vec<isize>> {
         }
     });
     region_counts
+}
+
+fn range_intersect(r1: &Range<isize>, r2: &Range<isize>) -> Range<isize> {
+    let min = cmp::max(r1.start, r2.start);
+    let max = cmp::min(r1.end, r2.end);
+    min..max
+}
+
+fn range_union(r1: &Range<isize>, r2: &Range<isize>) -> Range<isize> {
+    let min = cmp::min(r1.start, r2.start);
+    let max = cmp::max(r1.end, r2.end);
+    min..max
 }
