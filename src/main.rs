@@ -1,6 +1,6 @@
 use fastanvil::{Chunk, JavaChunk, RegionBuffer};
 use log::*;
-use std::{cmp, collections::BTreeMap, fs::File, ops::Range, sync::mpsc::channel};
+use std::{cmp, collections::BTreeMap, fs::File, ops::Range, path::PathBuf, sync::mpsc::channel};
 use structopt::StructOpt;
 use threadpool::ThreadPool;
 
@@ -8,17 +8,17 @@ const IGNORE_BLOCKS: &[&str] = &["minecraft:air", "minecraft:cave_air"];
 const CHUNK_FULL: &str = "full";
 
 #[derive(StructOpt, Debug)]
-#[structopt()]
+#[structopt(about, author)]
 struct Opt {
+    /// Minecraft region files (*.mca)
+    #[structopt(name = "FILE", required = true, parse(from_os_str))]
+    region_files: Vec<PathBuf>,
     /// Silence all output
     #[structopt(short = "q", long = "quiet")]
     quiet: bool,
     /// Verbose mode (-v, -vv, -vvv, etc)
     #[structopt(short = "v", long = "verbose", parse(from_occurrences))]
     verbose: usize,
-    /// Minecraft region file (*.mca)
-    #[structopt(short = "f", long = "region-file")]
-    region_file: String,
     /// Number of concurrent threads; defaults to the number of available CPU cores
     #[structopt(short = "t", long = "threads")]
     threads: Option<usize>,
@@ -62,18 +62,14 @@ fn main() {
 
     let (tx, rx) = channel();
 
-    // MAP: process Minecraft region files
-    {
-        // TODO: loop over region files
+    for region_file in opt.region_files {
         let tx = tx.clone();
         let world_y_coords = world_y_coords.clone();
 
         // process each region file in separate thread
         pool.execute(move || {
-            let file_path = opt.region_file;
-
-            info!("Processing file {}...", file_path);
-            let file = File::open(file_path).expect("file does not exist");
+            info!("Processing file {}...", region_file.display());
+            let file = File::open(region_file).expect("file does not exist");
 
             let region_counts = gather_region_stats(file, world_y_coords, opt.all_chunks);
 
@@ -111,9 +107,9 @@ fn main() {
     println!();
     // print CSV rows
     for (k, v) in final_counts {
-        print!("\"{}\"",k);
+        print!("\"{}\"", k);
         for count in v {
-            print!(",{}",count);
+            print!(",{}", count);
         }
         println!();
     }
@@ -153,7 +149,10 @@ fn gather_region_stats(
                 let counter_idx = usize::try_from(chunk_y - world_y_coords.start).unwrap();
                 for chunk_x in 0..16 {
                     for chunk_z in 0..16 {
-                        let block_type = chunk.block(chunk_x, chunk_y, chunk_z).unwrap().name();
+                        let block_type = match chunk.block(chunk_x, chunk_y, chunk_z) {
+                            Some(block) => block.name(),
+                            None => continue,
+                        };
                         // skip blocks we're not interested in
                         if !IGNORE_BLOCKS.iter().any(|&i| i == block_type) {
                             // can't use the entry API without changing ownership, which is expensive
