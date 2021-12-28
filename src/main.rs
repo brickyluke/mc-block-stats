@@ -15,6 +15,7 @@ fn main() {
     let file_path = matches.value_of("file").expect("file is required");
 
     let mut final_counts: BTreeMap<String, Vec<isize>> = BTreeMap::new();
+    let mut region_counts: BTreeMap<String, Vec<isize>> = BTreeMap::new();
 
     let file = File::open(file_path).expect("file does not exist");
     let mut region = RegionBuffer::new(file);
@@ -30,7 +31,6 @@ fn main() {
         );
 
         if chunk.status() == CHUNK_FULL {
-            let mut counts: BTreeMap<&str, Vec<isize>> = BTreeMap::new();
             // let world_height = usize::try_from(chunk.y_range().end - chunk.y_range().start).unwrap();
             let world_height = 256; // hard-coded for 1.17 -> will break things for 1.18!
             let height_offset = 0 - chunk.y_range().start;
@@ -41,27 +41,32 @@ fn main() {
                     for chunk_z in 0..16 {
                         let block_type = chunk.block(chunk_x, chunk_y, chunk_z).unwrap().name();
                         if !IGNORE_BLOCKS.iter().any(|&i| i == block_type) {
-                            // increase counter at the given height
-                            (*(counts.entry(block_type).or_insert(vec![0; world_height])))
-                                [counter_idx] += 1;
+                            // can't use the entry API without changing ownership, which is expensive
+                            if region_counts.contains_key(block_type) {
+                                (*region_counts.get_mut(block_type).unwrap())[counter_idx] += 1;
+                            } else {
+                                // need to own block_type name
+                                region_counts.insert(block_type.to_string(), vec![0; world_height]);
+                            }
                         }
                     }
                 }
             }
-
-            for (block_type, count) in counts {
-                final_counts
-                    .entry(block_type.to_string())
-                    .and_modify(|t| {
-                        // this can fail if not all chunks have the same world height
-                        for (i, total) in t.iter_mut().enumerate() {
-                            *total += count[i]
-                        }
-                    })
-                    .or_insert(count);
-            }
         }
     });
+
+    for (block_type, count) in region_counts {
+        final_counts
+            .entry(block_type)
+            .and_modify(|t| {
+                // this can fail if not all chunks have the same world height
+                for (i, total) in t.iter_mut().enumerate() {
+                    *total += count[i]
+                }
+            })
+            .or_insert(count);
+    }
+
     for (k, v) in final_counts {
         println!("{} -> {:?}", k, v);
     }
