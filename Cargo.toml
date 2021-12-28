@@ -7,8 +7,10 @@ edition = "2021"
 license = "Apache-2.0"
 
 [dependencies]
-clap = "2.34.0"
+structopt = "0.3"
 fastnbt = "1.3"
 fastanvil = "0.23"
 threadpool = "1.8"
 num_cpus = "1.13"
+log = "0.4"
+stderrlog = "0.5"
