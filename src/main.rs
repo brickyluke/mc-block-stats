@@ -90,7 +90,6 @@ fn main() {
             final_counts
                 .entry(block_type)
                 .and_modify(|t| {
-                    // this can fail if not all chunks have the same world height
                     for (i, total) in t.iter_mut().enumerate() {
                         *total += count[i]
                     }
@@ -156,12 +155,10 @@ fn gather_region_stats(
                         // skip blocks we're not interested in
                         if !IGNORE_BLOCKS.iter().any(|&i| i == block_type) {
                             // can't use the entry API without changing ownership, which is expensive
-                            if region_counts.contains_key(block_type) {
-                                (*region_counts.get_mut(block_type).unwrap())[counter_idx] += 1;
-                            } else {
-                                // need to own block_type name
+                            if !region_counts.contains_key(block_type) {
                                 region_counts.insert(block_type.to_string(), vec![0; world_height]);
                             }
+                            (*region_counts.get_mut(block_type).unwrap())[counter_idx] += 1;
                         }
                     }
                 }
