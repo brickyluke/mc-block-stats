@@ -1,11 +1,54 @@
 use fastanvil::{Chunk, JavaChunk, RegionBuffer};
 use log::*;
-use std::{cmp, collections::BTreeMap, fs::File, ops::Range, path::PathBuf, sync::mpsc::channel};
+use std::{
+    collections::BTreeMap, fs::File, io::Error, ops::Range, path::PathBuf, sync::mpsc::channel,
+};
 use structopt::StructOpt;
 use threadpool::ThreadPool;
 
 const IGNORE_BLOCKS: &[&str] = &["minecraft:air", "minecraft:cave_air"];
 const CHUNK_FULL: &str = "full";
+
+pub struct BlockCounts {
+    counts: BTreeMap<String, Vec<isize>>,
+    world_y_range: Range<isize>,
+    capacity: usize,
+}
+
+impl BlockCounts {
+    pub fn new(world_y_range: &Range<isize>) -> BlockCounts {
+        BlockCounts {
+            counts: BTreeMap::new(),
+            world_y_range: world_y_range.clone(),
+            capacity: usize::try_from(world_y_range.end - world_y_range.start).unwrap(),
+        }
+    }
+
+    pub fn count(&mut self, y_coord: isize, block_type: &str) {
+        let counter_idx = usize::try_from(y_coord - self.world_y_range.start).unwrap();
+        if !self.counts.contains_key(block_type) {
+            self.counts
+                .insert(block_type.to_string(), vec![0; self.capacity]);
+        }
+        (*self.counts.get_mut(block_type).unwrap())[counter_idx] += 1;
+    }
+
+    pub fn add(&mut self, other: BlockCounts) {
+        if self.world_y_range != other.world_y_range {
+            panic!("Block counts are not the same world size.")
+        };
+        for (block_type, other_counts) in other.counts {
+            self.counts
+                .entry(block_type)
+                .and_modify(|my_block_counts| {
+                    for (i, my_block_count) in my_block_counts.iter_mut().enumerate() {
+                        *my_block_count += other_counts[i]
+                    }
+                })
+                .or_insert(other_counts);
+        }
+    }
+}
 
 #[derive(StructOpt, Debug)]
 #[structopt(about, author)]
@@ -69,33 +112,23 @@ fn main() {
         // process each region file in separate thread
         pool.execute(move || {
             info!("Processing file {}...", region_file.display());
-            let file = File::open(region_file).expect("file does not exist");
 
-            let region_counts = gather_region_stats(file, world_y_coords, opt.all_chunks);
-
-            tx.send(region_counts).expect("Could not send data!");
+            match gather_region_stats(region_file, world_y_coords, opt.all_chunks) {
+                Ok(region_counts) => tx.send(region_counts).expect("Couldn't not send data!"),
+                Err(e) => error!("Couldn't process region file: {}", e),
+            };
         });
     }
     drop(tx);
 
     // REDUCE: process results coming in from each region file
-    let mut final_counts: BTreeMap<String, Vec<isize>> = BTreeMap::new();
+    let mut final_counts = BlockCounts::new(&world_y_coords);
     for region_counts in rx.iter() {
         info!(
             "Got result for region [{} threads active]",
             pool.active_count()
         );
-
-        for (block_type, count) in region_counts {
-            final_counts
-                .entry(block_type)
-                .and_modify(|t| {
-                    for (i, total) in t.iter_mut().enumerate() {
-                        *total += count[i]
-                    }
-                })
-                .or_insert(count);
-        }
+        final_counts.add(region_counts);
     }
 
     // print CSV header
@@ -105,7 +138,7 @@ fn main() {
     }
     println!();
     // print CSV rows
-    for (k, v) in final_counts {
+    for (k, v) in final_counts.counts {
         print!("\"{}\"", k);
         for count in v {
             print!(",{}", count);
@@ -115,16 +148,16 @@ fn main() {
 }
 
 fn gather_region_stats(
-    file: File,
+    region_file: PathBuf,
     world_y_coords: Range<isize>,
-    full_chunks_only: bool,
-) -> BTreeMap<String, Vec<isize>> {
+    process_all_chunks: bool,
+) -> Result<BlockCounts, Error> {
     let world_height = usize::try_from(world_y_coords.end - world_y_coords.start).unwrap();
     debug!("World height={}", world_height);
 
+    let file = File::open(region_file)?;
     let mut region = RegionBuffer::new(file);
-    let mut region_counts: BTreeMap<String, Vec<isize>> = BTreeMap::new();
-    let mut max_y_range = 0..0;
+    let mut region_counts = BlockCounts::new(&world_y_coords);
 
     // process all chunks in region file sequentially
     let _ = region.for_each_chunk(|x, z, data| {
@@ -140,12 +173,10 @@ fn gather_region_stats(
         );
 
         // skip incomplete chunks
-        if chunk.status() == CHUNK_FULL || full_chunks_only {
+        if process_all_chunks || chunk.status() == CHUNK_FULL {
+            // only process Y coordinates that are within range
             let y_range = range_intersect(&world_y_coords, &chunk.y_range());
-            // TODO: use maximum y_range to further limit dimensions of result set
-            max_y_range = range_union(&y_range, &max_y_range);
             for chunk_y in y_range {
-                let counter_idx = usize::try_from(chunk_y - world_y_coords.start).unwrap();
                 for chunk_x in 0..16 {
                     for chunk_z in 0..16 {
                         let block_type = match chunk.block(chunk_x, chunk_y, chunk_z) {
@@ -154,28 +185,22 @@ fn gather_region_stats(
                         };
                         // skip blocks we're not interested in
                         if !IGNORE_BLOCKS.iter().any(|&i| i == block_type) {
-                            // can't use the entry API without changing ownership, which is expensive
-                            if !region_counts.contains_key(block_type) {
-                                region_counts.insert(block_type.to_string(), vec![0; world_height]);
-                            }
-                            (*region_counts.get_mut(block_type).unwrap())[counter_idx] += 1;
+                            region_counts.count(chunk_y, block_type);
                         }
                     }
                 }
             }
         }
     });
-    region_counts
+    Ok(region_counts)
 }
 
 fn range_intersect(r1: &Range<isize>, r2: &Range<isize>) -> Range<isize> {
-    let min = cmp::max(r1.start, r2.start);
-    let max = cmp::min(r1.end, r2.end);
-    min..max
-}
-
-fn range_union(r1: &Range<isize>, r2: &Range<isize>) -> Range<isize> {
-    let min = cmp::min(r1.start, r2.start);
-    let max = cmp::max(r1.end, r2.end);
+    let min = if r1.start > r2.start {
+        r1.start
+    } else {
+        r2.start
+    };
+    let max = if r1.end < r2.end { r1.end } else { r2.end };
     min..max
 }
