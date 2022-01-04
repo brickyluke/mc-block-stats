@@ -1,51 +1,76 @@
+use std::{fs::File, io::Error, ops::Range, path::PathBuf, sync::mpsc::channel};
+
 use fastanvil::{Chunk, JavaChunk, RegionBuffer};
 use log::*;
-use std::{
-    collections::BTreeMap, fs::File, io::Error, ops::Range, path::PathBuf, sync::mpsc::channel,
-};
 use structopt::StructOpt;
 use threadpool::ThreadPool;
+
+use crate::stats::BlockCounts;
 
 const IGNORE_BLOCKS: &[&str] = &["minecraft:air", "minecraft:cave_air"];
 const CHUNK_FULL: &str = "full";
 
-pub struct BlockCounts {
-    counts: BTreeMap<String, Vec<isize>>,
-    world_y_range: Range<isize>,
-    capacity: usize,
-}
+mod stats {
+    use core::fmt;
+    use std::collections::BTreeMap;
+    use std::ops::Range;
 
-impl BlockCounts {
-    pub fn new(world_y_range: &Range<isize>) -> BlockCounts {
-        BlockCounts {
-            counts: BTreeMap::new(),
-            world_y_range: world_y_range.clone(),
-            capacity: usize::try_from(world_y_range.end - world_y_range.start).unwrap(),
+    pub struct BlockCounts {
+        counts: BTreeMap<String, Vec<isize>>,
+        world_y_range: Range<isize>,
+        capacity: usize,
+    }
+
+    impl BlockCounts {
+        pub fn new(world_y_range: &Range<isize>) -> BlockCounts {
+            BlockCounts {
+                counts: BTreeMap::new(),
+                world_y_range: world_y_range.clone(),
+                capacity: usize::try_from(world_y_range.end - world_y_range.start).unwrap(),
+            }
+        }
+
+        pub fn count_block(&mut self, y_coord: isize, block_type: &str) {
+            let counter_idx = usize::try_from(y_coord - self.world_y_range.start).unwrap();
+            if !self.counts.contains_key(block_type) {
+                self.counts
+                    .insert(block_type.to_string(), vec![0; self.capacity]);
+            }
+            (*self.counts.get_mut(block_type).unwrap())[counter_idx] += 1;
+        }
+
+        pub fn add_block_counts(&mut self, other: BlockCounts) -> Result<(), MismatchingYRange> {
+            if self.world_y_range != other.world_y_range {
+                return Err(MismatchingYRange);
+            }
+            for (block_type, other_counts) in other.counts {
+                self.counts
+                    .entry(block_type)
+                    .and_modify(|my_block_counts| {
+                        for (i, my_block_count) in my_block_counts.iter_mut().enumerate() {
+                            *my_block_count += other_counts[i]
+                        }
+                    })
+                    .or_insert(other_counts);
+            }
+            Ok(())
+        }
+
+        pub fn world_y_range(&self) -> Range<isize> {
+            self.world_y_range.clone()
+        }
+
+        pub fn block_counts(&self) -> &BTreeMap<String, Vec<isize>> {
+            &self.counts
         }
     }
 
-    pub fn count(&mut self, y_coord: isize, block_type: &str) {
-        let counter_idx = usize::try_from(y_coord - self.world_y_range.start).unwrap();
-        if !self.counts.contains_key(block_type) {
-            self.counts
-                .insert(block_type.to_string(), vec![0; self.capacity]);
-        }
-        (*self.counts.get_mut(block_type).unwrap())[counter_idx] += 1;
-    }
+    #[derive(Debug, Clone)]
+    pub struct MismatchingYRange;
 
-    pub fn add(&mut self, other: BlockCounts) {
-        if self.world_y_range != other.world_y_range {
-            panic!("Block counts are not the same world size.")
-        };
-        for (block_type, other_counts) in other.counts {
-            self.counts
-                .entry(block_type)
-                .and_modify(|my_block_counts| {
-                    for (i, my_block_count) in my_block_counts.iter_mut().enumerate() {
-                        *my_block_count += other_counts[i]
-                    }
-                })
-                .or_insert(other_counts);
+    impl fmt::Display for MismatchingYRange {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            write!(f, "Y ranges don't match")
         }
     }
 }
@@ -124,21 +149,24 @@ fn main() {
     // REDUCE: process results coming in from each region file
     let mut final_counts = BlockCounts::new(&world_y_coords);
     for region_counts in rx.iter() {
-        info!(
-            "Got result for region [{} threads active]",
-            pool.active_count()
-        );
-        final_counts.add(region_counts);
+        debug!("Got result for region");
+        match final_counts.add_block_counts(region_counts) {
+            Ok(()) => info!(
+                "Added counts for region. [{} threads active]",
+                pool.active_count()
+            ),
+            Err(e) => error!("Couldn't add counts for region: {}", e),
+        }
     }
 
     // print CSV header
     print!("block_type");
-    for y in world_y_coords {
+    for y in final_counts.world_y_range() {
         print!(",y_{}", y);
     }
     println!();
     // print CSV rows
-    for (k, v) in final_counts.counts {
+    for (k, v) in final_counts.block_counts() {
         print!("\"{}\"", k);
         for count in v {
             print!(",{}", count);
@@ -183,9 +211,9 @@ fn gather_region_stats(
                             Some(block) => block.name(),
                             None => continue,
                         };
-                        // skip blocks we're not interested in
+                        // skip blocks that we're not interested in
                         if !IGNORE_BLOCKS.iter().any(|&i| i == block_type) {
-                            region_counts.count(chunk_y, block_type);
+                            region_counts.count_block(chunk_y, block_type);
                         }
                     }
                 }
