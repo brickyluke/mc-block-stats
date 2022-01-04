@@ -14,6 +14,7 @@ mod stats {
     use core::fmt;
     use std::collections::BTreeMap;
     use std::ops::Range;
+    use BlockCountsError::*;
 
     pub struct BlockCounts {
         counts: BTreeMap<String, Vec<isize>>,
@@ -39,9 +40,12 @@ mod stats {
             (*self.counts.get_mut(block_type).unwrap())[counter_idx] += 1;
         }
 
-        pub fn add_block_counts(&mut self, other: BlockCounts) -> Result<(), MismatchingYRange> {
+        pub fn add_block_counts(&mut self, other: BlockCounts) -> Result<(), BlockCountsError> {
             if self.world_y_range != other.world_y_range {
-                return Err(MismatchingYRange);
+                return Err(MismatchingYRange {
+                    this: self.world_y_range.clone(),
+                    other: other.world_y_range,
+                });
             }
             for (block_type, other_counts) in other.counts {
                 self.counts
@@ -65,12 +69,23 @@ mod stats {
         }
     }
 
-    #[derive(Debug, Clone)]
-    pub struct MismatchingYRange;
+    #[derive(PartialEq, Debug)]
+    pub enum BlockCountsError {
+        MismatchingYRange {
+            this: Range<isize>,
+            other: Range<isize>,
+        },
+    }
 
-    impl fmt::Display for MismatchingYRange {
+    impl fmt::Display for BlockCountsError {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            write!(f, "Y ranges don't match")
+            match &*self {
+                MismatchingYRange { this, other } => write!(
+                    f,
+                    "Y ranges don't match: expected {}..{}, but got {}..{}",
+                    this.start, this.end, other.start, other.end
+                ),
+            }
         }
     }
 }
@@ -155,7 +170,7 @@ fn main() {
                 "Added counts for region. [{} threads active]",
                 pool.active_count()
             ),
-            Err(e) => error!("Couldn't add counts for region: {}", e),
+            Err(e) => error!("Couldn't add counts for region! {}", e),
         }
     }
 
