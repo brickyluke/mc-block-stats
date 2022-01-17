@@ -1,7 +1,8 @@
 # Minecraft Block Statistics Analyser
 
-Counts Minecraft blocks by type and Y coordinate for a given set of Minecraft region files (`*.mca`).
-Emits resulting stats as CSV.
+Counts Minecraft blocks by type and altitude (Y coordinate, height) for a given set of Minecraft region files (`*.mca`).
+
+Prints resulting statistics in CSV format.
 
 ## Build
 
