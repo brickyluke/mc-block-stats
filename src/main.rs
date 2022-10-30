@@ -1,6 +1,6 @@
-use std::{fs::File, io::Error, ops::Range, path::PathBuf, sync::mpsc::channel};
+use std::{error::Error, fs::File, ops::Range, path::PathBuf, sync::mpsc::channel};
 
-use fastanvil::{Chunk, JavaChunk, RegionBuffer};
+use fastanvil::{Chunk, JavaChunk, Region};
 use log::*;
 use structopt::StructOpt;
 use threadpool::ThreadPool;
@@ -116,47 +116,55 @@ fn gather_region_stats(
     region_file: PathBuf,
     world_y_coords: Range<isize>,
     process_all_chunks: bool,
-) -> Result<BlockCount, Error> {
+) -> Result<BlockCount, Box<dyn Error>> {
     let world_height = usize::try_from(world_y_coords.end - world_y_coords.start).unwrap();
     debug!("World height={}", world_height);
 
     let file = File::open(region_file)?;
-    let mut region = RegionBuffer::new(file);
+    let mut region = Region::from_stream(file).unwrap();
     let mut region_counts = BlockCount::new(&world_y_coords);
 
-    // process all chunks in region file sequentially
-    let _ = region.for_each_chunk(|x, z, data| {
-        let chunk: JavaChunk = fastnbt::de::from_bytes(data.as_slice()).unwrap();
+    // process chunks in region file sequentially
+    for z in 0..32 {
+        for x in 0..32 {
+            match region.read_chunk(x, z) {
+                Ok(Some(data)) => {
+                    let chunk = JavaChunk::from_bytes(&data).unwrap();
 
-        debug!(
-            "Processing Chunk( x={}, z={}, status={} ) -> y = [{}..{}]",
-            x,
-            z,
-            &chunk.status(),
-            chunk.y_range().start,
-            chunk.y_range().end
-        );
+                    debug!(
+                        "Processing Chunk( x={}, z={}, status={} ) -> y = [{}..{}]",
+                        x,
+                        z,
+                        &chunk.status(),
+                        chunk.y_range().start,
+                        chunk.y_range().end
+                    );
 
-        // skip incomplete chunks
-        if process_all_chunks || chunk.status() == CHUNK_FULL {
-            // only process Y coordinates that are within range
-            let y_range = range_intersect(&world_y_coords, &chunk.y_range());
-            for chunk_y in y_range {
-                for chunk_x in 0..16 {
-                    for chunk_z in 0..16 {
-                        let block_type = match chunk.block(chunk_x, chunk_y, chunk_z) {
-                            Some(block) => block.name(),
-                            None => continue,
-                        };
-                        // skip blocks that we're not interested in
-                        if !IGNORE_BLOCKS.iter().any(|&i| i == block_type) {
-                            region_counts.count_block(chunk_y, block_type);
+                    // skip incomplete chunks
+                    if process_all_chunks || chunk.status() == CHUNK_FULL {
+                        // only process Y coordinates that are within range
+                        let y_range = range_intersect(&world_y_coords, &chunk.y_range());
+                        for chunk_y in y_range {
+                            for chunk_x in 0..16 {
+                                for chunk_z in 0..16 {
+                                    let block_type = match chunk.block(chunk_x, chunk_y, chunk_z) {
+                                        Some(block) => block.name(),
+                                        None => continue,
+                                    };
+                                    // skip blocks that we're not interested in
+                                    if !IGNORE_BLOCKS.iter().any(|&i| i == block_type) {
+                                        region_counts.count_block(chunk_y, block_type);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
+                Ok(None) => {}
+                Err(e) => return Err(e.into()),
             }
         }
-    });
+    }
     Ok(region_counts)
 }
 
