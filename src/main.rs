@@ -121,7 +121,7 @@ fn gather_region_stats(
     debug!("World height={}", world_height);
 
     let file = File::open(region_file)?;
-    let mut region = Region::from_stream(file).unwrap();
+    let mut region = Region::from_stream(file)?;
     let mut region_counts = BlockCount::new(&world_y_coords);
 
     // process chunks in region file sequentially
