@@ -1,16 +1,16 @@
 [package]
 name = "mc-block-stats"
 description = "Minecraft block statistics analyser"
-version = "1.5.1"
+version = "1.5.2"
 authors = ["brickyluke <brickyluke@gmail.com>"]
 edition = "2021"
 license = "Apache-2.0"
 
 [dependencies]
 structopt = "0.3"
-fastnbt = "2.3"
-fastanvil = "0.26"
+fastnbt = "2"
+fastanvil = "0.30"
 threadpool = "1.8"
-num_cpus = "1.13"
+num_cpus = "1.16"
 log = "0.4"
 stderrlog = "0.5"
