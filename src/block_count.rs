@@ -36,14 +36,18 @@ impl BlockCount {
             });
         }
         for (block_type, other_count) in other.count {
-            self.count
-                .entry(block_type)
-                .and_modify(|block_count| {
-                    for (i, this_count) in block_count.iter_mut().enumerate() {
-                        *this_count += other_count[i]
+            match self.count.get_mut(&block_type) {
+                Some(this_count) => {
+                    // Use zip for more efficient iteration without indexing
+                    for (this, other) in this_count.iter_mut().zip(other_count.iter()) {
+                        *this += other;
                     }
-                })
-                .or_insert(other_count);
+                }
+                None => {
+                    // Move the vector instead of copying it
+                    self.count.insert(block_type, other_count);
+                }
+            }
         }
         Ok(())
     }
