@@ -1,9 +1,9 @@
-use std::{error::Error, fs::File, ops::Range, path::PathBuf, sync::mpsc::channel};
+use std::{error::Error, fs::File, ops::Range, path::PathBuf};
 
 use fastanvil::{Chunk, JavaChunk, Region};
 use log::*;
+use rayon::prelude::*;
 use structopt::StructOpt;
-use threadpool::ThreadPool;
 
 use block_count::BlockCount;
 
@@ -49,52 +49,50 @@ fn main() {
         .unwrap();
 
     // world height
-    let world_y_coords = if opt.high_worlds { -64..320 } else { 0..256 };
+    let world_y_coords: Range<isize> = if opt.high_worlds { -64..320 } else { 0..256 };
     info!(
         "Using Y coordinate range from {} to {}.",
         world_y_coords.start, world_y_coords.end
     );
 
     // initialise thread pool
-    let threads = opt.threads.unwrap_or_default();
-    let pool_size = if threads == 0 {
-        num_cpus::get()
+    let pool_size = opt.threads.unwrap_or(0);
+    if pool_size > 0 {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(pool_size)
+            .build_global()
+            .expect("Failed to build thread pool");
+        info!("Using {} threads.", pool_size);
     } else {
-        threads
-    };
-    info!("Using up to {} threads.", pool_size);
-    let pool = ThreadPool::new(pool_size);
+        info!("Using default number of threads (one per CPU core).");
+    }
 
-    let (tx, rx) = channel();
-
-    for region_file in opt.region_files {
-        let tx = tx.clone();
-        let world_y_coords = world_y_coords.clone();
-
-        // process each region file in separate thread
-        pool.execute(move || {
+    let all_chunks = opt.all_chunks;
+    let world_y_for_reduce = world_y_coords.clone();
+    let final_counts = opt.region_files
+        .into_par_iter()
+        .filter_map(move |region_file| {
             info!("Processing file {}...", region_file.display());
-
-            match gather_region_stats(region_file, world_y_coords, opt.all_chunks) {
-                Ok(region_counts) => tx.send(region_counts).expect("Couldn't not send data!"),
-                Err(e) => error!("Couldn't process region file: {}", e),
-            };
-        });
-    }
-    drop(tx);
-
-    // REDUCE: process results coming in from each region file
-    let mut final_counts = BlockCount::new(&world_y_coords);
-    for region_counts in rx.iter() {
-        debug!("Got result for region");
-        match final_counts.add_block_count(region_counts) {
-            Ok(()) => info!(
-                "Added counts for region. [{} threads active]",
-                pool.active_count()
-            ),
-            Err(e) => error!("Couldn't add counts for region! {}", e),
-        }
-    }
+            match gather_region_stats(region_file, world_y_coords.clone(), all_chunks) {
+                Ok(counts) => {
+                    info!("Finished processing region.");
+                    Some(counts)
+                }
+                Err(e) => {
+                    error!("Couldn't process region file: {}", e);
+                    None
+                }
+            }
+        })
+        .reduce(
+            move || BlockCount::new(&world_y_for_reduce),
+            |mut acc, counts| {
+                if let Err(e) = acc.add_block_count(counts) {
+                    error!("Couldn't add counts for region! {}", e);
+                }
+                acc
+            },
+        );
 
     // print CSV header
     print!("block_type");
@@ -102,8 +100,10 @@ fn main() {
         print!(",y_{}", y);
     }
     println!();
-    // print CSV rows
-    for (k, v) in final_counts.block_count() {
+    // print CSV rows sorted by block name
+    let mut block_entries: Vec<_> = final_counts.block_count().iter().collect();
+    block_entries.sort_unstable_by_key(|(k, _)| k.as_str());
+    for (k, v) in block_entries {
         print!("\"{}\"", k);
         for count in v {
             print!(",{}", count);

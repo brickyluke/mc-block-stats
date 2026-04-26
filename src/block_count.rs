@@ -1,11 +1,11 @@
 use core::fmt;
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::ops::Range;
 
 use BlockCountError::*;
 
 pub struct BlockCount {
-    count: BTreeMap<String, Vec<isize>>,
+    count: HashMap<String, Vec<isize>>,
     world_y_range: Range<isize>,
     capacity: usize,
 }
@@ -13,7 +13,7 @@ pub struct BlockCount {
 impl BlockCount {
     pub fn new(world_y_range: &Range<isize>) -> BlockCount {
         BlockCount {
-            count: BTreeMap::new(),
+            count: HashMap::new(),
             world_y_range: world_y_range.clone(),
             capacity: usize::try_from(world_y_range.end - world_y_range.start).unwrap(),
         }
@@ -21,11 +21,14 @@ impl BlockCount {
 
     pub fn count_block(&mut self, y_coord: isize, block_type: &str) {
         let counter_idx = usize::try_from(y_coord - self.world_y_range.start).unwrap();
-        if !self.count.contains_key(block_type) {
-            self.count
-                .insert(block_type.to_string(), vec![0; self.capacity]);
+        if let Some(counter) = self.count.get_mut(block_type) {
+            // this case is much much more common
+            counter[counter_idx] += 1;
+        } else {
+            let mut counter = vec![0isize; self.capacity];
+            counter[counter_idx] = 1;
+            self.count.insert(block_type.to_string(), counter);
         }
-        (*self.count.get_mut(block_type).unwrap())[counter_idx] += 1;
     }
 
     pub fn add_block_count(&mut self, other: BlockCount) -> Result<(), BlockCountError> {
@@ -38,13 +41,12 @@ impl BlockCount {
         for (block_type, other_count) in other.count {
             match self.count.get_mut(&block_type) {
                 Some(this_count) => {
-                    // Use zip for more efficient iteration without indexing
+                    // use zip for efficient iteration without indexing
                     for (this, other) in this_count.iter_mut().zip(other_count.iter()) {
                         *this += other;
                     }
                 }
                 None => {
-                    // Move the vector instead of copying it
                     self.count.insert(block_type, other_count);
                 }
             }
@@ -56,7 +58,7 @@ impl BlockCount {
         self.world_y_range.clone()
     }
 
-    pub fn block_count(&self) -> &BTreeMap<String, Vec<isize>> {
+    pub fn block_count(&self) -> &HashMap<String, Vec<isize>> {
         &self.count
     }
 }
