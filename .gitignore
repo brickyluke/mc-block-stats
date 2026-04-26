@@ -1,5 +1,7 @@
 /target
 
-/.idea
-*.iml
+# Visual Code: local development
+.vscode/
 
+# Claude local settings
+.claude/settings.local.json

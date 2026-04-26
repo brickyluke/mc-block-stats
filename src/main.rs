@@ -10,7 +10,7 @@ use block_count::BlockCount;
 mod block_count;
 
 const IGNORE_BLOCKS: &[&str] = &["minecraft:air", "minecraft:cave_air"];
-const CHUNK_FULL: &str = "full";
+const CHUNK_FULL: &[&str] = &["full", "minecraft:full"];
 
 #[derive(StructOpt, Debug)]
 #[structopt(about, author)]
@@ -120,9 +120,15 @@ fn gather_region_stats(
     let world_height = usize::try_from(world_y_coords.end - world_y_coords.start).unwrap();
     debug!("World height={}", world_height);
 
-    let file = File::open(region_file)?;
-    let mut region = Region::from_stream(file)?;
     let mut region_counts = BlockCount::new(&world_y_coords);
+    let file = File::open(&region_file)?;
+    let mut region = match Region::from_stream(file) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("Skipping {}: couldn't read region header: {}", region_file.display(), e);
+            return Ok(region_counts);
+        }
+    };
 
     // process chunks in region file sequentially
     for z in 0..32 {
@@ -132,16 +138,16 @@ fn gather_region_stats(
                     let chunk = JavaChunk::from_bytes(&data).unwrap();
 
                     debug!(
-                        "Processing Chunk( x={}, z={}, status={} ) -> y = [{}..{}]",
+                        "Processing chunk ({}, {}): y=[{}..{}] - status={}",
                         x,
                         z,
-                        &chunk.status(),
                         chunk.y_range().start,
-                        chunk.y_range().end
+                        chunk.y_range().end,
+                        &chunk.status()
                     );
 
                     // skip incomplete chunks
-                    if process_all_chunks || chunk.status() == CHUNK_FULL {
+                    if process_all_chunks || CHUNK_FULL.contains(&chunk.status().as_str()) {
                         // only process Y coordinates that are within range
                         let y_range = range_intersect(&world_y_coords, &chunk.y_range());
                         for chunk_y in y_range {
@@ -161,7 +167,7 @@ fn gather_region_stats(
                     }
                 }
                 Ok(None) => {}
-                Err(e) => return Err(e.into()),
+                Err(e) => warn!("Skipping chunk ({}, {}): {}", x, z, e),
             }
         }
     }
