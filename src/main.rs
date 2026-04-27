@@ -1,4 +1,4 @@
-use std::{error::Error, fs::File, ops::Range, path::PathBuf};
+use std::{error::Error, fs::File, ops::Range, path::{Path, PathBuf}};
 
 use fastanvil::{Chunk, JavaChunk, Region};
 use log::*;
@@ -73,13 +73,13 @@ fn main() {
         .into_par_iter()
         .filter_map(move |region_file| {
             info!("Processing file {}...", region_file.display());
-            match gather_region_stats(region_file, world_y_coords.clone(), all_chunks) {
+            match gather_region_stats(&region_file, world_y_coords.clone(), all_chunks) {
                 Ok(counts) => {
-                    info!("Finished processing region.");
+                    info!("Finished processing file {}", region_file.display());
                     Some(counts)
                 }
                 Err(e) => {
-                    error!("Couldn't process region file: {}", e);
+                    error!("Couldn't process file {}: {}", region_file.display(), e);
                     None
                 }
             }
@@ -113,7 +113,7 @@ fn main() {
 }
 
 fn gather_region_stats(
-    region_file: PathBuf,
+    region_file: &Path,
     world_y_coords: Range<isize>,
     process_all_chunks: bool,
 ) -> Result<BlockCount, Box<dyn Error>> {
