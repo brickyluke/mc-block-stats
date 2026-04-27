@@ -122,6 +122,10 @@ fn gather_region_stats(
 
     let mut region_counts = BlockCount::new(&world_y_coords);
     let file = File::open(&region_file)?;
+    if file.metadata()?.len() == 0 {
+        info!("Skipping {}: file is empty", region_file.display());
+        return Ok(region_counts);
+    }
     let mut region = match Region::from_stream(file) {
         Ok(r) => r,
         Err(e) => {
@@ -135,7 +139,13 @@ fn gather_region_stats(
         for x in 0..32 {
             match region.read_chunk(x, z) {
                 Ok(Some(data)) => {
-                    let chunk = JavaChunk::from_bytes(&data).unwrap();
+                    let chunk = match JavaChunk::from_bytes(&data) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            warn!("Skipping chunk ({}, {}): couldn't parse chunk data: {}", x, z, e);
+                            continue;
+                        }
+                    };
 
                     debug!(
                         "Processing chunk ({}, {}): y=[{}..{}] - status={}",
